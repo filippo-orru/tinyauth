@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/tinyauthapp/tinyauth/internal/service"
 	"github.com/tinyauthapp/tinyauth/internal/utils"
 	"github.com/tinyauthapp/tinyauth/internal/utils/logger"
-	"github.com/tinyauthapp/tinyauth/pkg/validators"
 	"go.uber.org/dig"
 
 	"github.com/gin-gonic/gin"
@@ -82,7 +80,7 @@ func (controller *OAuthController) oauthURLHandler(c *gin.Context) {
 	}
 
 	if !controller.isOidcRequest(reqParams) {
-		if !controller.isRedirectSafe(reqParams.RedirectURI) {
+		if !utils.IsRedirectSafe(controller.config, controller.runtime, controller.log, reqParams.RedirectURI) {
 			controller.log.App.Warn().Str("redirectUri", reqParams.RedirectURI).Msg("Unsafe redirect URI, ignoring")
 			reqParams.RedirectURI = ""
 		}
@@ -110,7 +108,7 @@ func (controller *OAuthController) oauthURLHandler(c *gin.Context) {
 		return
 	}
 
-	c.SetCookie(controller.runtime.OAuthSessionCookieName, sessionId, int(time.Hour.Seconds()), "/", controller.getCookieDomain(), controller.config.Auth.SecureCookie, true)
+	c.SetCookie(controller.runtime.OAuthSessionCookieName, sessionId, int(time.Hour.Seconds()), "/", utils.GetSessionCookieDomain(controller.config, controller.runtime), controller.config.Auth.SecureCookie, true)
 
 	c.JSON(200, gin.H{
 		"status":  200,
@@ -140,7 +138,7 @@ func (controller *OAuthController) oauthCallbackHandler(c *gin.Context) {
 		return
 	}
 
-	c.SetCookie(controller.runtime.OAuthSessionCookieName, "", -1, "/", controller.getCookieDomain(), controller.config.Auth.SecureCookie, true)
+	c.SetCookie(controller.runtime.OAuthSessionCookieName, "", -1, "/", utils.GetSessionCookieDomain(controller.config, controller.runtime), controller.config.Auth.SecureCookie, true)
 
 	oauthPendingSession, err := controller.auth.GetOAuthPendingSession(sessionIdCookie)
 
@@ -283,60 +281,6 @@ func (controller *OAuthController) oauthCallbackHandler(c *gin.Context) {
 
 func (controller *OAuthController) isOidcRequest(params service.OAuthCallbackParams) bool {
 	return params.LoginFor == string(FrontendLoginForOIDC)
-}
-
-func (controller *OAuthController) getCookieDomain() string {
-	if !controller.config.Auth.SubdomainsEnabled {
-		return ""
-	}
-	return controller.runtime.CookieDomain
-}
-
-func (controller *OAuthController) isRedirectSafe(redirectURI string) bool {
-	v := validators.NewDomainValidator(validators.DomainValidatorOptions{
-		WithPort:       true,
-		WithScheme:     true,
-		AllowedSchemes: []string{"https", "http"},
-	})
-
-	_, err := v.SafeHostname(controller.runtime.AppURL)
-
-	if err != nil {
-		controller.log.App.Error().Err(err).Msg("App URL is invalid, cannot validate redirect URI")
-		return false
-	}
-
-	err = v.Validate(redirectURI, controller.runtime.AppURL)
-
-	if err == nil {
-		return true
-	}
-
-	controller.log.App.Debug().Err(err).Msg("Failed to validate redirect URI")
-
-	if !errors.Is(err, validators.ErrHostnameMismatch) {
-		return false
-	}
-
-	if !controller.config.Auth.SubdomainsEnabled {
-		return false
-	}
-
-	v = validators.NewDomainValidator(validators.DomainValidatorOptions{})
-
-	hostname, err := v.SafeHostname(redirectURI)
-
-	if err != nil {
-		controller.log.App.Error().Err(err).Msg("Failed to get safe hostname from redirect URI")
-		return false
-	}
-
-	if strings.HasSuffix(hostname, "."+strings.ToLower(controller.runtime.CookieDomain)) ||
-		hostname == controller.runtime.CookieDomain {
-		return true
-	}
-
-	return false
 }
 
 type oauthUserInfo struct {

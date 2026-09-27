@@ -10,6 +10,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/tinyauthapp/tinyauth/internal/model"
+	"github.com/tinyauthapp/tinyauth/internal/utils/logger"
+	"github.com/tinyauthapp/tinyauth/pkg/validators"
 )
 
 var (
@@ -109,6 +112,64 @@ func CheckFilter(filter string, input string) (bool, error) {
 func GenerateUUID(str string) string {
 	uuid := uuid.NewSHA1(uuid.NameSpaceURL, []byte(str))
 	return uuid.String()
+}
+
+// GetSessionCookieDomain returns the cookie domain to use for session cookies given the static config and runtime config,
+// falling back to an empty string (host-only cookie) when subdomains are not enabled.
+func GetSessionCookieDomain(config *model.Config, runtime *model.RuntimeConfig) string {
+	if !config.Auth.SubdomainsEnabled {
+		return ""
+	}
+	return runtime.CookieDomain
+}
+
+// IsRedirectSafe checks that the given redirect URI is either the configured app URL or,
+// when subdomains are enabled, a subdomain of the configured cookie domain.
+func IsRedirectSafe(config *model.Config, runtime *model.RuntimeConfig, log *logger.Logger, redirectURI string) bool {
+	v := validators.NewDomainValidator(validators.DomainValidatorOptions{
+		WithPort:       true,
+		WithScheme:     true,
+		AllowedSchemes: []string{"https", "http"},
+	})
+
+	_, err := v.SafeHostname(runtime.AppURL)
+
+	if err != nil {
+		log.App.Error().Err(err).Msg("App URL is invalid, cannot validate redirect URI")
+		return false
+	}
+
+	err = v.Validate(redirectURI, runtime.AppURL)
+
+	if err == nil {
+		return true
+	}
+
+	log.App.Debug().Err(err).Msg("Failed to validate redirect URI")
+
+	if !errors.Is(err, validators.ErrHostnameMismatch) {
+		return false
+	}
+
+	if !config.Auth.SubdomainsEnabled {
+		return false
+	}
+
+	v = validators.NewDomainValidator(validators.DomainValidatorOptions{})
+
+	hostname, err := v.SafeHostname(redirectURI)
+
+	if err != nil {
+		log.App.Error().Err(err).Msg("Failed to get safe hostname from redirect URI")
+		return false
+	}
+
+	if strings.HasSuffix(hostname, "."+strings.ToLower(runtime.CookieDomain)) ||
+		hostname == runtime.CookieDomain {
+		return true
+	}
+
+	return false
 }
 
 func GenerateString(length int) string {
